@@ -1,44 +1,14 @@
+// client/src/services/auth.service.js
 import axios from "axios";
 
-class AuthService {
-  constructor() {
-    this.api = axios.create({
-      baseURL: process.env.REACT_APP_SERVER_URL || process.env.REACT_APP_SERVER_AUTH_URL || "",
-    });
+// NGINX/Ingress exposes the services under /api/* — no localhost fallbacks.
+const baseURL = process.env.REACT_APP_SERVER_AUTH_URL || "/api/auth";
 
-    // Automatically set JWT token on the request headers for every request
-    this.api.interceptors.request.use((config) => {
-      // Retrieve the JWT token from the local storage
-      const storedToken = localStorage.getItem("authToken");
+const api = axios.create({ baseURL });
 
-      if (storedToken) {
-        config.headers = { Authorization: `Bearer ${storedToken}` };
-      }
+export const signup = (data) => api.post("/signup", data);  // NOT /register
+export const login  = (data) => api.post("/login", data);
+export const verify = (token) =>
+  api.get("/verify", { headers: { Authorization: `Bearer ${token}` } });
 
-      return config;
-    });
-  }
-
-  login = (requestBody) => {
-    return this.api.post("/api/auth/login", requestBody);
-    // same as
-    // return axios.post("http://149.100.138.125:6001/auth/login");
-  };
-
-  signup = (requestBody) => {
-    return this.api.post("/api/auth/signup", requestBody);
-    // same as
-    // return axios.post("http://149.100.138.125:6001/auth/singup");
-  };
-
-  verify = () => {
-    return this.api.get("/api/auth/verify");
-    // same as
-    // return axios.post("http://149.100.138.125:6001/auth/verify");
-  };
-}
-
-// Create one instance (object) of the service
-const authService = new AuthService();
-
-export default authService;
+export default { signup, login, verify };
