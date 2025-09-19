@@ -30,3 +30,6 @@ docker build -t fmtorres/client:dev client
 ## Live
 - HTTPS: https://fmt.145-133-88-88.sslip.io/
 - IngressClass: \`nginx-ferdi\` • Namespace: \`ferdi\`
+
+## Smoke
+[![Ingress smoke](https://github.com/MTFerdi/FMT/actions/workflows/ci-cd.yml/badge.svg?event=push)](https://github.com/MTFerdi/FMT/actions/workflows/ci-cd.yml)
