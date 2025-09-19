@@ -3,80 +3,137 @@ name: ferdi-ci-cd
 on:
   push:
     branches: [ main ]
-    paths:
-      - "backend/**"
-      - "client/**"
-      - ".github/workflows/ci-cd.yml"
   pull_request:
-    branches: [ main ]   # <— no paths filter so every PR runs
+    branches: [ main ]
+  workflow_dispatch:
 
 env:
-  ACR_NAME: ${{ secrets.ACR_NAME }}
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
-  ACR_REPO: ironhack.final.project
+  # k8s / ingress
+  K8S_NAMESPACE: ferdi
+  HOSTNAME: fmt.145-133-88-88.sslip.io
+  # container registry (e.g. ferdiacruksouth.azurecr.io)
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-push:
-    name: Build & Push Images
+  build_and_push:
+    name: Build & Push Images (${{ matrix.name }}, ${{ matrix.context }})
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
-        service:
+        include:
           - name: auth
             context: backend/auth
+            dockerfile: backend/auth/Dockerfile
           - name: discounts
             context: backend/discounts
+            dockerfile: backend/discounts/Dockerfile
           - name: items
             context: backend/items
+            dockerfile: backend/items/Dockerfile
           - name: client
             context: client
+            dockerfile: client/Dockerfile
+
     steps:
+      - name: Checkout
       - uses: actions/checkout@v4
 
-      - name: Azure login
-        uses: azure/login@v2
+      # ----- REQUIRED SEQUENCE START -----
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx (docker-container)
+        uses: docker/setup-buildx-action@v3
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          install: true
+          driver: docker-container
 
-      - name: Docker login to ACR
+      - name: Login to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.AZURE_CLIENT_ID }}
+          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # ----- REQUIRED SEQUENCE END -----
+
+      - name: Compute image tags
+        id: meta
+        shell: bash
         run: |
-          az acr login -n "$ACR_NAME"
+          SHA_SHORT="${GITHUB_SHA::7}"
+          DATE_UTC="$(date -u +'%Y%m%d')"
+          IMAGE_BASE="${{ env.ACR_LOGIN_SERVER }}/ironhack.final.project:${{ matrix.name }}"
+          echo "latest=${IMAGE_BASE}-latest" >> "$GITHUB_OUTPUT"
+          echo "dated=${IMAGE_BASE}-v0.1.0-${DATE_UTC}-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
 
-      - name: Compute image tag
-        id: tag
-        run: |
-          sha="${{ github.sha }}"
-          echo "tag=v0.1.0-${sha::7}" >> $GITHUB_OUTPUT
-
-      - name: Build & push ${{ matrix.service.name }}
+      - name: Build & Push ${{ matrix.name }}
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.service.context }}
-          file: ${{ matrix.service.context }}/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
+          platforms: linux/amd64
           tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPO }}:${{ matrix.service.name }}-${{ steps.tag.outputs.tag }}
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPO }}:${{ matrix.service.name }}-latest
+            ${{ steps.meta.outputs.latest }}
+            ${{ steps.meta.outputs.dated }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to AKS
-    needs: build-and-push
     runs-on: ubuntu-latest
+    needs: build_and_push
+    if: github.event_name != 'pull_request'
+
     steps:
-      - uses: actions/checkout@v4
       - name: Azure login
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - name: Get AKS creds
-        run: az aks get-credentials -g rg-ferdi-aks-uksouth -n aks-ferdi-uksouth --overwrite-existing
-      - name: Rollout status
-        run: |
-          kubectl -n ferdi rollout status deploy/auth-deploy
-          kubectl -n ferdi rollout status deploy/discounts-deploy
-          kubectl -n ferdi rollout status deploy/items-deploy
-          kubectl -n ferdi rollout status deploy/client-deploy
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ secrets.AKS_CLUSTER_NAME }}
+
+      - name: Ensure namespace exists
+        run: kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
+        env:
+          NS: ${{ env.K8S_NAMESPACE }}
+
+      - name: Update deployments to latest images
+        env:
+          NS: ${{ env.K8S_NAMESPACE }}
+          ACR: ${{ env.ACR_LOGIN_SERVER }}
+        run: |
+          set -eux
+          kubectl -n "$NS" set image deploy/auth-deploy        auth=${ACR}/ironhack.final.project:auth-latest --record
+          kubectl -n "$NS" set image deploy/discounts-deploy   discounts=${ACR}/ironhack.final.project:discounts-latest --record
+          kubectl -n "$NS" set image deploy/items-deploy       items=${ACR}/ironhack.final.project:items-latest --record
+          kubectl -n "$NS" set image deploy/client-deploy      client=${ACR}/ironhack.final.project:client-latest --record
+
+      - name: Wait for rollout
+        env:
+          NS: ${{ env.K8S_NAMESPACE }}
+        run: |
+          set -e
+          kubectl -n "$NS" rollout status deploy/auth-deploy
+          kubectl -n "$NS" rollout status deploy/discounts-deploy
+          kubectl -n "$NS" rollout status deploy/items-deploy
+          kubectl -n "$NS" rollout status deploy/client-deploy
+
+      - name: Ingress smoke test
+        run: |
+          set -e
+          curl -fsSLI "https://${{ env.HOSTNAME }}/"
+          curl -fsSLI "https://${{ env.HOSTNAME }}/api/items"
+          curl -fsSLI "https://${{ env.HOSTNAME }}/api/discounts"
+          curl -fsSLI "https://${{ env.HOSTNAME }}/api/auth"
