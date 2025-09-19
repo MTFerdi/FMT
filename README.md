@@ -20,3 +20,6 @@ docker build -t fmtorres/discounts:dev backend/discounts
 docker build -t fmtorres/items:dev backend/items
 docker build -t fmtorres/client:dev client
 
+
+
+```
