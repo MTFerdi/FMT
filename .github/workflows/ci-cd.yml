@@ -116,3 +116,27 @@ jobs:
           kubectl -n "$NS" rollout status deploy/discounts-deploy
           kubectl -n "$NS" rollout status deploy/items-deploy
           kubectl -n "$NS" rollout status deploy/client-deploy
+
+  smoke:
+    name: Smoke test (ingress)
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    env:
+      HOSTNAME: fmt.145-133-88-88.sslip.io
+    steps:
+      - name: Wait for ingress to be ready
+        run: |
+          for i in {1..30}; do
+            code=$(curl -sk -o /dev/null -w "%{http_code}" "https://${HOSTNAME}/")
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "Ingress not ready"; exit 1
+      - name: Hit /
+        run: curl -fS "https://${HOSTNAME}/" -I
+      - name: Hit /api/items
+        run: curl -fS "https://${HOSTNAME}/api/items" -I
+      - name: Hit /api/discounts
+        run: curl -fS "https://${HOSTNAME}/api/discounts" -I
+      - name: Hit /api/auth
+        run: curl -fS "https://${HOSTNAME}/api/auth" -I

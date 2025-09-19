@@ -23,3 +23,10 @@ docker build -t fmtorres/client:dev client
 
 
 ```
+
+## CI/CD Status
+[![ferdi-ci-cd](https://github.com/MTFerdi/FMT/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/MTFerdi/FMT/actions/workflows/ci-cd.yml)
+
+## Live
+- HTTPS: https://fmt.145-133-88-88.sslip.io/
+- IngressClass: \`nginx-ferdi\` • Namespace: \`ferdi\`
