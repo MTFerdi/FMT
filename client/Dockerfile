@@ -9,20 +9,19 @@ RUN npm run build
 
 # --- Runtime stage (nginx) ---
 FROM nginx:1.27-alpine
-# Optional: non-root (nginx image already uses nginx user in alpine variant)
 # Copy build to nginx html
 COPY --from=build /app/build /usr/share/nginx/html
 # Replace default server config to support SPA + path prefixes
 RUN rm /etc/nginx/conf.d/default.conf
 COPY <<'NGINX' /etc/nginx/conf.d/app.conf
 server {
-    listen       8088;             # unconventional local port (we'll use Ingress 80/443 in AKS)
+    listen       8088;             # unconventional local port (Ingress will expose 80/443 on AKS)
     server_name  _;
 
     root   /usr/share/nginx/html;
     index  index.html;
 
-    # Try files, then fall back to index.html for SPA routes
+    # SPA fallback
     location / {
         try_files $uri /index.html;
     }
