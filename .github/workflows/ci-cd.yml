@@ -1,0 +1,118 @@
+name: ferdi-ci-cd
+
+on:
+  push:
+    branches: [ main, infra/aks-bootstrap ]
+    paths:
+      - "backend/**"
+      - "client/**"
+      - ".github/workflows/ci-cd.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "backend/**"
+      - "client/**"
+  workflow_dispatch:
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
+  ACR_REPO: ironhack.final.project
+
+jobs:
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - name: auth
+            context: backend/auth
+          - name: discounts
+            context: backend/discounts
+          - name: items
+            context: backend/items
+          - name: client
+            context: client
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: ACR login (Docker)
+        run: az acr login -n "$ACR_NAME"
+
+      # FIX: use buildx with docker-container driver + gha cache
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      - name: Compute image tag
+        id: vars
+        run: |
+          GIT_SHA="${GITHUB_SHA::7}"
+          DATE_TAG="$(date +%Y%m%d)"
+          IMG_TAG="v0.1.0-${DATE_TAG}-${GIT_SHA}"
+          echo "img_tag=$IMG_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build & push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.context }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPO }}:${{ matrix.service.name }}-${{ steps.vars.outputs.img_tag }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPO }}:${{ matrix.service.name }}-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to AKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Compute image tag
+        id: vars
+        run: |
+          GIT_SHA="${GITHUB_SHA::7}"
+          DATE_TAG="$(date +%Y%m%d)"
+          IMG_TAG="v0.1.0-${DATE_TAG}-${GIT_SHA}"
+          echo "img_tag=$IMG_TAG" >> $GITHUB_OUTPUT
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ secrets.AZ_RESOURCE_GROUP }}
+          cluster-name: ${{ secrets.AKS_NAME }}
+
+      - name: Roll deployments
+        env:
+          NS: ferdi
+          ACR: ${{ env.ACR_LOGIN_SERVER }}
+          REPO: ${{ env.ACR_REPO }}
+          TAG: ${{ steps.vars.outputs.img_tag }}
+        run: |
+          kubectl -n "$NS" set image deploy/auth-deploy        auth="${ACR}/${REPO}:auth-${TAG}"
+          kubectl -n "$NS" set image deploy/discounts-deploy   discounts="${ACR}/${REPO}:discounts-${TAG}"
+          kubectl -n "$NS" set image deploy/items-deploy       items="${ACR}/${REPO}:items-${TAG}"
+          kubectl -n "$NS" set image deploy/client-deploy      client="${ACR}/${REPO}:client-${TAG}"
+
+          kubectl -n "$NS" rollout status deploy/auth-deploy
+          kubectl -n "$NS" rollout status deploy/discounts-deploy
+          kubectl -n "$NS" rollout status deploy/items-deploy
+          kubectl -n "$NS" rollout status deploy/client-deploy
